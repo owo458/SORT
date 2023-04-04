@@ -1,118 +1,79 @@
-///////////////////////////////////////////////////////////////////////////////
-//  SORT: A Simple, Online and Realtime Tracker
-//  
-//  This is a C++ reimplementation of the open source tracker in
-//  https://github.com/abewley/sort
-//  Based on the work of Alex Bewley, alex@dynamicdetection.com, 2016
-//
-//  Cong Ma, mcximing@sina.cn, 2016
-//  
-//  This program is free software: you can redistribute it and/or modify
-//  it under the terms of the GNU General Public License as published by
-//  the Free Software Foundation, either version 3 of the License, or
-//  (at your option) any later version.
-//  
-//  This program is distributed in the hope that it will be useful,
-//  but WITHOUT ANY WARRANTY; without even the implied warranty of
-//  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//  GNU General Public License for more details.
-//  
-//  You should have received a copy of the GNU General Public License
-//  along with this program.  If not, see <http://www.gnu.org/licenses/>.
-///////////////////////////////////////////////////////////////////////////////
-
-
-#include <iostream>
-#include <fstream>
-#include <iomanip> // to format image names using setw() and setfill()
-//#include <io.h>    // to check file existence using POSIX function access(). On Linux include <unistd.h>.
-#include <unistd.h>
-#include <set>
-
 #include "Hungarian.h"
 #include "KalmanTracker.h"
-
-#include "opencv4/opencv2/video/tracking.hpp"
-#include "opencv4/opencv2/highgui/highgui.hpp"
+#include "main.h"
 
 using namespace std;
 using namespace cv;
 
-
-
-typedef struct TrackingBox
+int main(int argc, char** argv)
 {
-	int frame;
-	int id;
-	Rect_<float> box;
-}TrackingBox;
+	std::string rawPath;
+	std::string dataPath;
+	std::string resultPath;
 
-
-// Computes IOU between two bounding boxes
-double GetIOU(Rect_<float> bb_test, Rect_<float> bb_gt)
-{
-	float in = (bb_test & bb_gt).area();
-	float un = bb_test.area() + bb_gt.area() - in;
-
-	if (un < DBL_EPSILON)
+	unsigned int startFrame = 0;
+	unsigned int isStop = 0;
+	float imageWidth = 1;
+	
+	if (argc < 2){
+		printf("%sCHECK ReadMe.md or ./bin/ld --help %s\n", "\033[31m", "\033[39m");
 		return 0;
+	}
+	else{
+		for (int i = 1; i < argc; i += 2){
+			
+			std::string str = std::string(argv[i]);
+			
+			if(str.compare("--raw") == 0)
+			{
+				rawPath = std::string(argv[i+1]);
+			}
+			else if(str.compare("--detData") == 0)
+			{
+				dataPath = std::string(argv[i+1]);
+			}
+			else if(str.compare("--result") == 0)
+			{
+				resultPath = std::string(argv[i+1]);
+			}
+			else if(str.compare("--start") == 0)
+			{
+				startFrame = atoi(argv[i+1]);
+			}
+			else
+			{
+				printf("%sERROR!! ./bin/ld --help%s\n", "\033[31m", "\033[39m");	
+				return -1;
+			}	
+		}
+	}
 
-	return (double)(in / un);
-}
-
-
-// global variables for counting
-#define CNUM 20
-int total_frames = 0;
-double total_time = 0.0;
-
-void TestSORT(string seqName, bool display);
-
-
-
-int main()
-{
-	vector<string> sequences = { "PETS09-S2L1", "TUD-Campus", "TUD-Stadtmitte", "ETH-Bahnhof", "ETH-Sunnyday", "ETH-Pedcross2", "KITTI-13", "KITTI-17", "ADL-Rundle-6", "ADL-Rundle-8", "Venice-2" };
-	for (auto seq : sequences)
-		TestSORT(seq, false);
-	TestSORT("PETS09-S2L1", true);
-
-	// Note: time counted here is of tracking procedure, while the running speed bottleneck is opening and parsing detectionFile.
-	cout << "Total Tracking took: " << total_time << " for " << total_frames << " frames or " << ((double)total_frames / (double)total_time) << " FPS" << endl;
-
-	return 0;
-}
-
-
-
-void TestSORT(string seqName, bool display)
-{
-	cout << "Processing " << seqName << "..." << endl;
-
-	// 0. randomly generate colors, only for display
+	printf("%sSTART      FRAME  : %u %s\n", "\033[32m", startFrame, "\033[39m");
+	printf("%sRAW        PATH   : %s %s\n", "\033[32m", rawPath.c_str(), "\033[39m");
+	printf("%sDETDATA    PATH   : %s %s\n", "\033[32m", dataPath.c_str(), "\033[39m");
+	printf("%sRESULT     PATH   : %s %s\n", "\033[32m", resultPath.c_str(), "\033[39m");
+	
+	/* randomly generate colors, only for display */ 
+	int colorMapSize = 20;
 	RNG rng(0xFFFFFFFF);
-	Scalar_<int> randColor[CNUM];
-	for (int i = 0; i < CNUM; i++)
+	Scalar_<int> randColor[colorMapSize];
+	for (int i = 0; i < colorMapSize; i++)
 		rng.fill(randColor[i], RNG::UNIFORM, 0, 256);
 
-	string imgPath = "/media/server/DATA/05.PublicData/2DMOT2015/train/" + seqName + "/img1/";
+	/* Load image */
+	unsigned int index = startFrame;
+	stringvec imgList;	
+	readDirectory(rawPath, imgList);
+	sort(imgList.begin(), imgList.end());
 
-	if (display)
-		if ((imgPath.c_str(), 0) == -1)
-		{
-			cerr << "Image path not found!" << endl;
-			display = false;
-		}
-
-	// 1. read detection file
+	/* Load detection data */
 	ifstream detectionFile;
-	string detFileName = "data/" + seqName + "/det.txt";
-	detectionFile.open(detFileName);
+	detectionFile.open(dataPath);
 
 	if (!detectionFile.is_open())
 	{
-		cerr << "Error: can not find file " << detFileName << endl;
-		return;
+		printf("%s [DATA_PATH_ERROR] %s\n","\033[31m","\033[39m");
+		return 0;
 	}
 
 	string detLine;
@@ -162,6 +123,17 @@ void TestSORT(string seqName, bool display)
 	vector<KalmanTracker> trackers;
 	KalmanTracker::kf_count = 0; // tracking id relies on this, so we have to reset it in each seq.
 
+	/* Result file Save */
+	ofstream resultsFile;
+	string resFileName = resultPath +"test.txt";
+	resultsFile.open(resFileName);
+
+	if (!resultsFile.is_open())
+	{
+		printf("%s [RRESULT_PATH_ERROR] %s\n","\033[31m","\033[39m");
+		return 0 ;
+	}
+
 	// variables used in the for-loop
 	vector<Rect_<float>> predictedBoxes;
 	vector<vector<double>> iouMatrix;
@@ -175,33 +147,21 @@ void TestSORT(string seqName, bool display)
 	unsigned int trkNum = 0;
 	unsigned int detNum = 0;
 
-	double cycle_time = 0.0;
-	int64 start_time = 0;
+	int idx = 0;
 
-	// prepare result file.
-	ofstream resultsFile;
-	string resFileName = "output/" + seqName + ".txt";
-	resultsFile.open(resFileName);
+	/* Tracking variables */
+	vector<TrackingBox> detectionData;
 
-	if (!resultsFile.is_open())
-	{
-		cerr << "Error: can not create file " << resFileName << endl;
-		return;
-	}
-
-	//////////////////////////////////////////////
-	// main loop
+	/* Main loop */
 	for (int fi = 0; fi < maxFrame; fi++)
+	//while(1)
 	{
-		total_frames++;
-		frame_count++;
-		//cout << frame_count << endl;
+		cv::Mat raw;
+		raw = imread(rawPath + imgList[idx], IMREAD_COLOR);
+		//imshow("test!!!",raw);
 
-		// I used to count running time using clock(), but found it seems to conflict with cv::cvWaitkey(),
-		// when they both exists, clock() can not get right result. Now I use cv::getTickCount() instead.
-		start_time = getTickCount();
-
-		if (trackers.size() == 0) // the first frame met
+		/* 처음이라서 Tracking이 동작하지 않음 */
+		if (trackers.size() == 0)
 		{
 			// initialize kalman trackers using first detections.
 			for (unsigned int i = 0; i < detFrameData[fi].size(); i++)
@@ -252,6 +212,7 @@ void TestSORT(string seqName, bool display)
 			{
 				// use 1-iou because the hungarian algorithm computes a minimum-cost assignment.
 				iouMatrix[i][j] = 1 - GetIOU(predictedBoxes[i], detFrameData[fi][j].box);
+				cv::rectangle(raw, detFrameData[fi][j].box, Scalar(255,0,0), 2, 8, 0);
 			}
 		}
 
@@ -345,29 +306,35 @@ void TestSORT(string seqName, bool display)
 				it = trackers.erase(it);
 		}
 
-		cycle_time = (double)(getTickCount() - start_time);
-		total_time += cycle_time / getTickFrequency();
-
 		for (auto tb : frameTrackingResult)
 			resultsFile << tb.frame << "," << tb.id << "," << tb.box.x << "," << tb.box.y << "," << tb.box.width << "," << tb.box.height << ",1,-1,-1,-1" << endl;
 
-		if (display) // read image, draw results and show them
-		{
-			ostringstream oss;
-			oss << imgPath << setw(6) << setfill('0') << fi + 1;
-			Mat img = imread(oss.str() + ".jpg");
-			if (img.empty())
-				continue;
-			
-			for (auto tb : frameTrackingResult)
-				cv::rectangle(img, tb.box, randColor[tb.id % CNUM], 2, 8, 0);
-			imshow(seqName, img);
-			waitKey(40);
-		}
+		//ostringstream oss;
+		//oss << rawPath << setw(6) << setfill('0') << fi + 1;
+		//Mat img = imread(oss.str() + ".jpg");
+		if (raw.empty())
+			continue;
+		
+		for (auto tb : frameTrackingResult)
+			cv::rectangle(raw, tb.box, randColor[tb.id % colorMapSize], 2, 8, 0);
+		imshow("test", raw);
+		waitKey(0);
+		idx++;
 	}
 
 	resultsFile.close();
+	
+	// destroyAllWindows();
 
-	if (display)
-		destroyAllWindows();
+	//vector<string> sequences = { "PETS09-S2L1", "TUD-Campus", "TUD-Stadtmitte", "ETH-Bahnhof", "ETH-Sunnyday", "ETH-Pedcross2", "KITTI-13", "KITTI-17", "ADL-Rundle-6", "ADL-Rundle-8", "Venice-2" };
+	// for (auto seq : sequences)
+	// 	TestSORT(seq, false);
+
+	//AlgorithmSORT(rawPath, dataPath,resultPath,true);
+
+	
+	// Note: time counted here is of tracking procedure, while the running speed bottleneck is opening and parsing detectionFile.
+	// cout << "Total Tracking took: " << total_time << " for " << total_frames << " frames or " << ((double)total_frames / (double)total_time) << " FPS" << endl;
+
+	return 0;
 }
